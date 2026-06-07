@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="VoiceCoach icon">
+  <rect width="512" height="512" rx="96" fill="#12312b"/>
+  <path d="M164 285c29 64 155 64 184 0" fill="none" stroke="#f5d66b" stroke-width="32" stroke-linecap="round"/>
+  <path d="M256 112c-45 0-82 37-82 82v45c0 45 37 82 82 82s82-37 82-82v-45c0-45-37-82-82-82z" fill="#f6f2e8"/>
+  <path d="M256 162v108" stroke="#12312b" stroke-width="28" stroke-linecap="round"/>
+  <path d="M126 218c-18 22-28 48-28 76s10 54 28 76M386 218c18 22 28 48 28 76s-10 54-28 76" fill="none" stroke="#81c9b7" stroke-width="28" stroke-linecap="round"/>
+</svg>
