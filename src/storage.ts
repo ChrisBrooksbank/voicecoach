@@ -23,7 +23,11 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function writeJson<T>(key: string, value: T): void {
-  window.localStorage.setItem(key, JSON.stringify(value));
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage can be full or blocked (private browsing); coaching still works without it.
+  }
 }
 
 export function loadSettings(): AppSettings {
@@ -69,6 +73,10 @@ export function saveSession(summary: SessionSummary): SessionSummary[] {
 }
 
 export function deleteAllHistory(): void {
-  window.localStorage.removeItem(SESSIONS_KEY);
-  window.localStorage.removeItem(CALIBRATIONS_KEY);
+  try {
+    window.localStorage.removeItem(SESSIONS_KEY);
+    window.localStorage.removeItem(CALIBRATIONS_KEY);
+  } catch {
+    // Nothing persisted if storage is unavailable.
+  }
 }

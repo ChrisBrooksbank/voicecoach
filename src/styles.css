@@ -12,6 +12,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   min-height: 100%;
   background: #f6f2e8;
@@ -195,7 +199,7 @@ main {
 .meter-fill {
   position: absolute;
   right: 7px;
-  bottom: 7px;
+  bottom: 0;
   left: 7px;
   min-height: 8px;
   border-radius: 999px;

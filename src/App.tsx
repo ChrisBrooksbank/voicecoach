@@ -44,6 +44,10 @@ type View = 'coach' | 'practice' | 'history' | 'settings';
 type SessionCounts = Record<'inRange' | 'tooQuiet' | 'tooLoud' | 'uncertain', number>;
 
 const COACH_INTERVAL_SECONDS = 0.25;
+// Frames a new state must persist before it is shown (~80ms at 60fps).
+const STATE_SETTLE_FRAMES = 5;
+// Pauses between words are normal, so hold the last cue for ~0.5s before showing "uncertain".
+const UNCERTAIN_SETTLE_FRAMES = 30;
 
 const initialCounts: SessionCounts = {
   inRange: 0,
@@ -114,12 +118,14 @@ function createSummary(
   averageSpeechOverAmbient: number,
 ): SessionSummary {
   const endedAt = Date.now();
+  // Only time the coach was actually listening counts; paused stretches would skew the ratios.
+  const activeSeconds = (counts.inRange + counts.tooQuiet + counts.tooLoud + counts.uncertain) * COACH_INTERVAL_SECONDS;
   const partial = {
     id: crypto.randomUUID(),
     situationId,
     startedAt: new Date(startedAt).toISOString(),
     endedAt: new Date(endedAt).toISOString(),
-    durationSeconds: Math.max(1, (endedAt - startedAt) / 1000),
+    durationSeconds: Math.max(1, activeSeconds),
     inRangeSeconds: counts.inRange * COACH_INTERVAL_SECONDS,
     tooQuietSeconds: counts.tooQuiet * COACH_INTERVAL_SECONDS,
     tooLoudSeconds: counts.tooLoud * COACH_INTERVAL_SECONDS,
@@ -153,6 +159,8 @@ export function App() {
   const [lastSummary, setLastSummary] = useState<SessionSummary | null>(null);
   const [hiddenPractice, setHiddenPractice] = useState(false);
   const lastAlertRef = useRef(0);
+  const calibrationTimerRef = useRef<number | null>(null);
+  const liveRef = useRef({ state: 'idle' as CoachingState, isSpeech: false, speechOverAmbient: 0 });
   const stableStateRef = useRef<CoachingState>('idle');
   const driftCountRef = useRef(0);
 
@@ -199,20 +207,20 @@ export function App() {
       driftCountRef.current = 0;
     } else {
       driftCountRef.current += 1;
-      if (driftCountRef.current >= 5 || nextState.startsWith('calibrating') || nextState === 'paused') {
+      if (
+        driftCountRef.current >=
+          (nextState === 'uncertain' ? UNCERTAIN_SETTLE_FRAMES : STATE_SETTLE_FRAMES) ||
+        nextState.startsWith('calibrating') ||
+        nextState === 'paused' ||
+        nextState === 'idle'
+      ) {
         stableStateRef.current = nextState;
         driftCountRef.current = 0;
       }
     }
 
     const state = stableStateRef.current;
-    const meter = clamp(
-      ((analyzer.reading.speechOverAmbient - Math.max(0, targetRange.min - 12)) /
-        (targetRange.max - targetRange.min + 24)) *
-        100,
-      0,
-      100,
-    );
+    const meter = clamp(meterPercent(analyzer.reading.speechOverAmbient, targetRange), 0, 100);
 
     return {
       ...analyzer.reading,
@@ -220,7 +228,7 @@ export function App() {
       meter,
       message: settingsState.toneMode === 'gentle' ? gentleMessage(state) : directMessage(state),
     };
-  }, [analyzer.reading, derivedState, settingsState.toneMode, targetRange.max, targetRange.min]);
+  }, [analyzer.reading, derivedState, settingsState.toneMode, targetRange]);
 
   useEffect(() => {
     if (calibrationStep === 'ambient') {
@@ -239,39 +247,43 @@ export function App() {
   ]);
 
   useEffect(() => {
+    liveRef.current = {
+      state: snapshot.state,
+      isSpeech: snapshot.isSpeech,
+      speechOverAmbient: snapshot.speechOverAmbient,
+    };
+  }, [snapshot.isSpeech, snapshot.speechOverAmbient, snapshot.state]);
+
+  useEffect(() => {
     if (analyzer.status !== 'active' || calibrationStep !== 'none' || !sessionStartedAt) return;
 
+    // Read live values through a ref so the interval is not torn down on every audio frame.
     const id = window.setInterval(() => {
+      const live = liveRef.current;
       setCounts((current) => {
         const next = { ...current };
-        if (snapshot.state === 'inRange') next.inRange += 1;
-        if (snapshot.state === 'tooQuiet') next.tooQuiet += 1;
-        if (snapshot.state === 'tooLoud') next.tooLoud += 1;
-        if (snapshot.state === 'uncertain') next.uncertain += 1;
+        if (live.state === 'inRange') next.inRange += 1;
+        if (live.state === 'tooQuiet') next.tooQuiet += 1;
+        if (live.state === 'tooLoud') next.tooLoud += 1;
+        if (live.state === 'uncertain') next.uncertain += 1;
         return next;
       });
 
-      if (analyzer.reading.isSpeech) {
-        setSpeechSum((current) => current + analyzer.reading.speechOverAmbient);
+      if (live.isSpeech) {
+        setSpeechSum((current) => current + live.speechOverAmbient);
         setSpeechSamples((current) => current + 1);
       }
     }, COACH_INTERVAL_SECONDS * 1000);
 
     return () => window.clearInterval(id);
-  }, [
-    analyzer.reading.isSpeech,
-    analyzer.reading.speechOverAmbient,
-    analyzer.status,
-    calibrationStep,
-    sessionStartedAt,
-    snapshot.state,
-  ]);
+  }, [analyzer.status, calibrationStep, sessionStartedAt]);
 
   useEffect(() => {
     const shouldAlert =
       analyzer.status === 'active' &&
       calibrationStep === 'none' &&
       settingsState.vibrationEnabled &&
+      !hiddenPractice &&
       (settingsState.alertMode === 'vibration' || settingsState.alertMode === 'both') &&
       (snapshot.state === 'tooQuiet' || snapshot.state === 'tooLoud') &&
       (settingsState.alertTarget === 'both' || settingsState.alertTarget === snapshot.state);
@@ -286,20 +298,32 @@ export function App() {
   }, [
     analyzer.status,
     calibrationStep,
+    hiddenPractice,
     settingsState.alertMode,
     settingsState.alertTarget,
     settingsState.vibrationEnabled,
     snapshot.state,
   ]);
 
+  function clearCalibrationTimer() {
+    if (calibrationTimerRef.current !== null) {
+      window.clearTimeout(calibrationTimerRef.current);
+      calibrationTimerRef.current = null;
+    }
+  }
+
+  useEffect(() => clearCalibrationTimer, []);
+
   async function startCalibration() {
-    await analyzer.start();
+    clearCalibrationTimer();
+    if (!(await analyzer.start())) return;
     setLastSummary(null);
     setSessionStartedAt(null);
     setCalibrationStep('ambient');
     setAmbientSamples([]);
     setVoiceSamples([]);
-    window.setTimeout(() => {
+    calibrationTimerRef.current = window.setTimeout(() => {
+      calibrationTimerRef.current = null;
       setCalibrationStep('voice');
     }, 5000);
   }
@@ -328,7 +352,8 @@ export function App() {
   }
 
   async function startSession() {
-    await analyzer.start();
+    clearCalibrationTimer();
+    if (!(await analyzer.start())) return;
     setLastSummary(null);
     setCalibrationStep('none');
     setCounts(initialCounts);
@@ -357,6 +382,7 @@ export function App() {
       setSessions(saveSession(summary));
     }
 
+    clearCalibrationTimer();
     setSessionStartedAt(null);
     setCalibrationStep('none');
     analyzer.stop();
@@ -370,7 +396,7 @@ export function App() {
   }
 
   const sessionActive = analyzer.status === 'active' || analyzer.status === 'paused';
-  const activeClass = `coach-state coach-state-${snapshot.state}`;
+  const activeClass = hiddenPractice ? 'coach-state coach-state-hidden' : `coach-state coach-state-${snapshot.state}`;
   const canFinishCalibration = calibrationStep === 'voice' && voiceSamples.length > 8;
   const presetLabel = getPreset(selectedSituation).label;
 
@@ -395,13 +421,21 @@ export function App() {
             <section className={activeClass} aria-live="polite">
               <div className="meter-shell">
                 <div className="meter-track">
-                  <div className="target-band" />
-                  <div className="meter-fill" style={{ height: `${snapshot.meter}%` }} />
+                  <div
+                    className="target-band"
+                    style={{
+                      bottom: `${meterPercent(targetRange.min, targetRange)}%`,
+                      height: `${meterPercent(targetRange.max, targetRange) - meterPercent(targetRange.min, targetRange)}%`,
+                    }}
+                  />
+                  <div className="meter-fill" style={{ height: `${hiddenPractice ? 0 : snapshot.meter}%` }} />
                 </div>
                 <div>
                   <p className="coach-label">{hiddenPractice ? 'Hidden practice' : snapshot.message}</p>
                   <p className="coach-detail">
-                    {sessionActive
+                    {hiddenPractice
+                      ? 'Feedback hidden. Turn it back on in Practice.'
+                      : sessionActive
                       ? `${Math.round(snapshot.speechOverAmbient)} above room · target ${Math.round(
                           targetRange.min,
                         )}-${Math.round(targetRange.max)}`
@@ -410,7 +444,7 @@ export function App() {
                 </div>
               </div>
 
-              <div className="signal-grid">
+              <div className="signal-grid" hidden={hiddenPractice}>
                 <Metric label="Room" value={Math.round(snapshot.ambientLevel)} icon={<Volume1 size={18} />} />
                 <Metric label="Voice" value={Math.round(snapshot.speechLevel)} icon={<Volume2 size={18} />} />
                 <Metric label="Confidence" value={`${Math.round(snapshot.confidence * 100)}%`} icon={<Gauge size={18} />} />
@@ -610,6 +644,14 @@ export function App() {
       </nav>
     </div>
   );
+}
+
+const METER_MARGIN = 12;
+
+// Maps a speech-over-room level onto the meter, leaving headroom above and below the target band.
+function meterPercent(level: number, range: { min: number; max: number }): number {
+  const floor = range.min - METER_MARGIN;
+  return ((level - floor) / (range.max - range.min + METER_MARGIN * 2)) * 100;
 }
 
 function average(values: number[]): number {

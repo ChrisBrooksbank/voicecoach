@@ -1,4 +1,4 @@
-const CACHE_NAME = 'voicecoach-v1';
+const CACHE_NAME = 'voicecoach-v2';
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -17,13 +17,31 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
+function cacheResponse(request, response) {
+  if (response.ok && response.type === 'basic') {
+    const copy = response.clone();
+    void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+  }
+  return response;
+}
 
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+
+  // Pages go network-first so a new deploy is picked up instead of a stale shell
+  // pointing at hashed bundles that no longer exist.
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => cacheResponse('/index.html', response))
+        .catch(() => caches.match('/index.html')),
+    );
+    return;
+  }
+
+  // Hashed build assets are immutable, so cache them as they load to make the app work offline.
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).catch(() => caches.match('/index.html'));
-    }),
+    caches.match(request).then((cached) => cached ?? fetch(request).then((response) => cacheResponse(request, response))),
   );
 });
