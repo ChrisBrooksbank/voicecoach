@@ -8,11 +8,16 @@ interface VoiceAnalyzer {
   status: AnalyzerStatus;
   error: string | null;
   reading: AudioReading;
-  start: () => Promise<void>;
+  start: () => Promise<boolean>;
   pause: () => void;
   resume: () => Promise<void>;
   stop: () => void;
 }
+
+// Frames used to seed the room level before speech detection kicks in (~0.5s at 60fps).
+const WARMUP_FRAMES = 30;
+// How fast the room level may creep upward while speech is detected, so a bad seed recovers.
+const AMBIENT_RISE_DURING_SPEECH = 0.0005;
 
 const initialReading: AudioReading = {
   ambientLevel: 20,
@@ -37,6 +42,8 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
   const speechRef = useRef(20);
   const lastSpeechAtRef = useRef(0);
   const pausedRef = useRef(false);
+  const warmupFramesRef = useRef(0);
+  const bufferRef = useRef<Float32Array<ArrayBuffer> | null>(null);
 
   const cleanup = useCallback(() => {
     if (frameRef.current) {
@@ -56,10 +63,22 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
     const analyser = analyserRef.current;
     if (!analyser || pausedRef.current) return;
 
-    const data = new Uint8Array(analyser.fftSize);
-    analyser.getByteTimeDomainData(data);
+    if (!bufferRef.current || bufferRef.current.length !== analyser.fftSize) {
+      bufferRef.current = new Float32Array(analyser.fftSize);
+    }
+    const data = bufferRef.current;
+    // Float samples keep quiet-room detail that 8-bit byte data rounds away to silence.
+    analyser.getFloatTimeDomainData(data);
 
     const rawLevel = amplitudeToRelativeDb(rmsFromTimeDomain(data));
+
+    if (warmupFramesRef.current < WARMUP_FRAMES) {
+      // Learn the room first; otherwise a stale seed makes every frame look like speech.
+      ambientRef.current = warmupFramesRef.current === 0 ? rawLevel : Math.min(ambientRef.current, rawLevel);
+      speechRef.current = ambientRef.current;
+      warmupFramesRef.current += 1;
+    }
+
     const ambient = ambientRef.current;
     const speechDelta = rawLevel - ambient;
     const now = performance.now();
@@ -68,6 +87,7 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
     if (isSpeech) {
       lastSpeechAtRef.current = now;
       speechRef.current = lerp(speechRef.current, rawLevel, 0.22);
+      ambientRef.current = lerp(ambientRef.current, rawLevel, AMBIENT_RISE_DURING_SPEECH);
     } else {
       ambientRef.current = lerp(ambientRef.current, rawLevel, rawLevel > ambient + 10 ? 0.01 : 0.06);
       speechRef.current = lerp(speechRef.current, Math.max(rawLevel, ambientRef.current), 0.04);
@@ -95,7 +115,7 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus('error');
       setError('Microphone access is not available in this browser.');
-      return;
+      return false;
     }
 
     try {
@@ -125,17 +145,22 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
       audioContextRef.current = context;
       analyserRef.current = analyser;
       pausedRef.current = false;
-      ambientRef.current = reading.ambientLevel;
-      speechRef.current = reading.speechLevel;
+
+      // iOS Safari starts contexts suspended when they are created after an await.
+      if (context.state === 'suspended') {
+        await context.resume();
+      }
 
       setStatus('active');
       frameRef.current = window.requestAnimationFrame(tick);
+      return true;
     } catch (caught) {
       cleanup();
       setStatus('error');
       setError(caught instanceof Error ? caught.message : 'Could not start the microphone.');
+      return false;
     }
-  }, [cleanup, reading.ambientLevel, reading.speechLevel, tick]);
+  }, [cleanup, tick]);
 
   const pause = useCallback(() => {
     pausedRef.current = true;
@@ -160,6 +185,9 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
   const stop = useCallback(() => {
     cleanup();
     pausedRef.current = false;
+    warmupFramesRef.current = 0;
+    ambientRef.current = initialReading.ambientLevel;
+    speechRef.current = initialReading.speechLevel;
     setStatus('idle');
     setReading(initialReading);
   }, [cleanup]);

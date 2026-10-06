@@ -1,13 +1,12 @@
 export function amplitudeToRelativeDb(amplitude: number): number {
-  const safeAmplitude = Math.max(amplitude, 0.000001);
+  const safeAmplitude = Math.max(amplitude, 0.00001);
   return 20 * Math.log10(safeAmplitude) + 100;
 }
 
-export function rmsFromTimeDomain(data: Uint8Array): number {
+export function rmsFromTimeDomain(data: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < data.length; i += 1) {
-    const normalized = (data[i] - 128) / 128;
-    sum += normalized * normalized;
+    sum += data[i] * data[i];
   }
   return Math.sqrt(sum / data.length);
 }

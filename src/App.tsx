@@ -307,7 +307,7 @@ export function App() {
 
   async function startCalibration() {
     clearCalibrationTimer();
-    await analyzer.start();
+    if (!(await analyzer.start())) return;
     setLastSummary(null);
     setSessionStartedAt(null);
     setCalibrationStep('ambient');
@@ -344,7 +344,7 @@ export function App() {
 
   async function startSession() {
     clearCalibrationTimer();
-    await analyzer.start();
+    if (!(await analyzer.start())) return;
     setLastSummary(null);
     setCalibrationStep('none');
     setCounts(initialCounts);
