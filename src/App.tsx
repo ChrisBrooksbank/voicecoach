@@ -114,12 +114,14 @@ function createSummary(
   averageSpeechOverAmbient: number,
 ): SessionSummary {
   const endedAt = Date.now();
+  // Only time the coach was actually listening counts; paused stretches would skew the ratios.
+  const activeSeconds = (counts.inRange + counts.tooQuiet + counts.tooLoud + counts.uncertain) * COACH_INTERVAL_SECONDS;
   const partial = {
     id: crypto.randomUUID(),
     situationId,
     startedAt: new Date(startedAt).toISOString(),
     endedAt: new Date(endedAt).toISOString(),
-    durationSeconds: Math.max(1, (endedAt - startedAt) / 1000),
+    durationSeconds: Math.max(1, activeSeconds),
     inRangeSeconds: counts.inRange * COACH_INTERVAL_SECONDS,
     tooQuietSeconds: counts.tooQuiet * COACH_INTERVAL_SECONDS,
     tooLoudSeconds: counts.tooLoud * COACH_INTERVAL_SECONDS,
@@ -276,6 +278,7 @@ export function App() {
       analyzer.status === 'active' &&
       calibrationStep === 'none' &&
       settingsState.vibrationEnabled &&
+      !hiddenPractice &&
       (settingsState.alertMode === 'vibration' || settingsState.alertMode === 'both') &&
       (snapshot.state === 'tooQuiet' || snapshot.state === 'tooLoud') &&
       (settingsState.alertTarget === 'both' || settingsState.alertTarget === snapshot.state);
@@ -290,6 +293,7 @@ export function App() {
   }, [
     analyzer.status,
     calibrationStep,
+    hiddenPractice,
     settingsState.alertMode,
     settingsState.alertTarget,
     settingsState.vibrationEnabled,
@@ -387,7 +391,7 @@ export function App() {
   }
 
   const sessionActive = analyzer.status === 'active' || analyzer.status === 'paused';
-  const activeClass = `coach-state coach-state-${snapshot.state}`;
+  const activeClass = hiddenPractice ? 'coach-state coach-state-hidden' : `coach-state coach-state-${snapshot.state}`;
   const canFinishCalibration = calibrationStep === 'voice' && voiceSamples.length > 8;
   const presetLabel = getPreset(selectedSituation).label;
 
@@ -419,12 +423,14 @@ export function App() {
                       height: `${meterPercent(targetRange.max, targetRange) - meterPercent(targetRange.min, targetRange)}%`,
                     }}
                   />
-                  <div className="meter-fill" style={{ height: `${snapshot.meter}%` }} />
+                  <div className="meter-fill" style={{ height: `${hiddenPractice ? 0 : snapshot.meter}%` }} />
                 </div>
                 <div>
                   <p className="coach-label">{hiddenPractice ? 'Hidden practice' : snapshot.message}</p>
                   <p className="coach-detail">
-                    {sessionActive
+                    {hiddenPractice
+                      ? 'Feedback hidden. Turn it back on in Practice.'
+                      : sessionActive
                       ? `${Math.round(snapshot.speechOverAmbient)} above room · target ${Math.round(
                           targetRange.min,
                         )}-${Math.round(targetRange.max)}`
@@ -433,7 +439,7 @@ export function App() {
                 </div>
               </div>
 
-              <div className="signal-grid">
+              <div className="signal-grid" hidden={hiddenPractice}>
                 <Metric label="Room" value={Math.round(snapshot.ambientLevel)} icon={<Volume1 size={18} />} />
                 <Metric label="Voice" value={Math.round(snapshot.speechLevel)} icon={<Volume2 size={18} />} />
                 <Metric label="Confidence" value={`${Math.round(snapshot.confidence * 100)}%`} icon={<Gauge size={18} />} />
