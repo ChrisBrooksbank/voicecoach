@@ -16,6 +16,10 @@ interface VoiceAnalyzer {
 
 // Frames used to seed the room level before speech detection kicks in (~0.5s at 60fps).
 const WARMUP_FRAMES = 30;
+// Give up waiting for real signal after this many frames (a gated mic may report pure silence).
+const MAX_WARMUP_FRAMES = 120;
+// Mic streams often open with a few frames of digital silence that must not seed the room level.
+const DIGITAL_SILENCE_RMS = 0.00002;
 // How fast the room level may creep upward while speech is detected, so a bad seed recovers.
 const AMBIENT_RISE_DURING_SPEECH = 0.0005;
 
@@ -43,6 +47,7 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
   const lastSpeechAtRef = useRef(0);
   const pausedRef = useRef(false);
   const warmupFramesRef = useRef(0);
+  const warmupTotalRef = useRef(0);
   const bufferRef = useRef<Float32Array<ArrayBuffer> | null>(null);
 
   const cleanup = useCallback(() => {
@@ -70,13 +75,19 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
     // Float samples keep quiet-room detail that 8-bit byte data rounds away to silence.
     analyser.getFloatTimeDomainData(data);
 
-    const rawLevel = amplitudeToRelativeDb(rmsFromTimeDomain(data));
+    const rms = rmsFromTimeDomain(data);
+    const rawLevel = amplitudeToRelativeDb(rms);
 
     if (warmupFramesRef.current < WARMUP_FRAMES) {
       // Learn the room first; otherwise a stale seed makes every frame look like speech.
-      ambientRef.current = warmupFramesRef.current === 0 ? rawLevel : Math.min(ambientRef.current, rawLevel);
+      warmupTotalRef.current += 1;
+      if (rms > DIGITAL_SILENCE_RMS || warmupTotalRef.current > MAX_WARMUP_FRAMES) {
+        ambientRef.current = warmupFramesRef.current === 0 ? rawLevel : Math.min(ambientRef.current, rawLevel);
+        warmupFramesRef.current += 1;
+      } else {
+        ambientRef.current = rawLevel;
+      }
       speechRef.current = ambientRef.current;
-      warmupFramesRef.current += 1;
     }
 
     const ambient = ambientRef.current;
@@ -186,6 +197,7 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
     cleanup();
     pausedRef.current = false;
     warmupFramesRef.current = 0;
+    warmupTotalRef.current = 0;
     ambientRef.current = initialReading.ambientLevel;
     speechRef.current = initialReading.speechLevel;
     setStatus('idle');

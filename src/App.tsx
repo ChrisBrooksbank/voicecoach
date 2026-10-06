@@ -44,6 +44,10 @@ type View = 'coach' | 'practice' | 'history' | 'settings';
 type SessionCounts = Record<'inRange' | 'tooQuiet' | 'tooLoud' | 'uncertain', number>;
 
 const COACH_INTERVAL_SECONDS = 0.25;
+// Frames a new state must persist before it is shown (~80ms at 60fps).
+const STATE_SETTLE_FRAMES = 5;
+// Pauses between words are normal, so hold the last cue for ~0.5s before showing "uncertain".
+const UNCERTAIN_SETTLE_FRAMES = 30;
 
 const initialCounts: SessionCounts = {
   inRange: 0,
@@ -204,7 +208,8 @@ export function App() {
     } else {
       driftCountRef.current += 1;
       if (
-        driftCountRef.current >= 5 ||
+        driftCountRef.current >=
+          (nextState === 'uncertain' ? UNCERTAIN_SETTLE_FRAMES : STATE_SETTLE_FRAMES) ||
         nextState.startsWith('calibrating') ||
         nextState === 'paused' ||
         nextState === 'idle'
