@@ -50,6 +50,15 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
   const warmupTotalRef = useRef(0);
   const bufferRef = useRef<Float32Array<ArrayBuffer> | null>(null);
 
+  // The room level must be re-learned for every new stream; carrying it over lets earlier speech inflate it.
+  const resetEstimator = useCallback(() => {
+    warmupFramesRef.current = 0;
+    warmupTotalRef.current = 0;
+    ambientRef.current = initialReading.ambientLevel;
+    speechRef.current = initialReading.speechLevel;
+    lastSpeechAtRef.current = 0;
+  }, []);
+
   const cleanup = useCallback(() => {
     if (frameRef.current) {
       window.cancelAnimationFrame(frameRef.current);
@@ -133,10 +142,12 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
       setStatus('requesting');
       setError(null);
       cleanup();
+      resetEstimator();
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          // Any browser voice processing alters the level we are trying to measure.
+          echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
         },
@@ -171,7 +182,7 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
       setError(caught instanceof Error ? caught.message : 'Could not start the microphone.');
       return false;
     }
-  }, [cleanup, tick]);
+  }, [cleanup, resetEstimator, tick]);
 
   const pause = useCallback(() => {
     pausedRef.current = true;
@@ -196,13 +207,10 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
   const stop = useCallback(() => {
     cleanup();
     pausedRef.current = false;
-    warmupFramesRef.current = 0;
-    warmupTotalRef.current = 0;
-    ambientRef.current = initialReading.ambientLevel;
-    speechRef.current = initialReading.speechLevel;
+    resetEstimator();
     setStatus('idle');
     setReading(initialReading);
-  }, [cleanup]);
+  }, [cleanup, resetEstimator]);
 
   useEffect(() => cleanup, [cleanup]);
 
