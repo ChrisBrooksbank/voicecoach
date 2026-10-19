@@ -23,6 +23,10 @@ const DIGITAL_SILENCE_RMS = 0.00002;
 // How fast the room level may creep upward while speech is detected, so a bad seed recovers.
 const AMBIENT_RISE_DURING_SPEECH = 0.0005;
 
+// Per-frame smoothing weights for the voice level while speech is detected (~60fps).
+const SPEECH_RISE = 0.1;
+const SPEECH_FALL = 0.025;
+
 const initialReading: AudioReading = {
   ambientLevel: 20,
   speechLevel: 20,
@@ -106,7 +110,8 @@ export function useVoiceAnalyzer(): VoiceAnalyzer {
 
     if (isSpeech) {
       lastSpeechAtRef.current = now;
-      speechRef.current = lerp(speechRef.current, rawLevel, 0.22);
+      // Syllables swing 10-20 dB frame to frame; rise quickly but fall slowly so the level reads loudness, not phonemes.
+      speechRef.current = lerp(speechRef.current, rawLevel, rawLevel > speechRef.current ? SPEECH_RISE : SPEECH_FALL);
       ambientRef.current = lerp(ambientRef.current, rawLevel, AMBIENT_RISE_DURING_SPEECH);
     } else {
       ambientRef.current = lerp(ambientRef.current, rawLevel, rawLevel > ambient + 10 ? 0.01 : 0.06);
